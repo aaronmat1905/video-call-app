@@ -1,4 +1,4 @@
-from connection_manager import ConnectionManager
+from server.connection_manager import ConnectionManager
 import argparse
 
 def main():

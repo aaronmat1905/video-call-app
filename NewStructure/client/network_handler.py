@@ -2,7 +2,7 @@ import socket
 import selectors
 import threading
 from typing import Optional, Callable
-from shared import protocols, ssl_utils
+from ..shared import protocols, ssl_utils
 
 class NetworkHandler:
     def __init__(self, host: str, port: int, certfile: str):
