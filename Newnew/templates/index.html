@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>📹 Web VideoCall Client</title>
+  <style>
+    body { font-family: Arial; background: #f0f0f0; padding: 30px; text-align: center; }
+    input, button { margin: 10px; padding: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>Welcome to Web Video Call</h2>
+
+  <input id="name" placeholder="Your Name" /><br />
+  <input id="server_ip" placeholder="Server IP" value="127.0.0.1" /><br />
+  <button onclick="connect()">Connect</button><br /><br />
+
+  <input id="target" placeholder="Target User" /><br />
+  <button onclick="call()">📞 Call</button>
+  <button onclick="receive()">📺 Receive</button>
+  <button onclick="quit()">❌ Quit</button>
+
+  <script>
+    function connect() {
+      fetch("/connect", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: document.getElementById("name").value,
+          server_ip: document.getElementById("server_ip").value
+        })
+      }).then(res => res.json()).then(console.log);
+    }
+
+    function call() {
+      fetch("/call", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ target: document.getElementById("target").value })
+      }).then(res => res.json()).then(console.log);
+    }
+
+    function receive() {
+      fetch("/receive", { method: "POST" }).then(res => res.json()).then(console.log);
+    }
+
+    function quit() {
+      fetch("/quit", { method: "POST" }).then(res => res.json()).then(console.log);
+    }
+  </script>
+</body>
+</html>
