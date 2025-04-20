@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Video Call</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        :root {
+            --primary: #4361ee;
+            --secondary: #3f37c9;
+            --danger: #f72585;
+            --light: #f8f9fa;
+            --dark: #212529;
+            --border-radius: 8px;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            color: var(--dark);
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        header {
+            background: var(--primary);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        h1 {
+            margin: 0;
+            font-weight: 500;
+        }
+        
+        .video-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            background: var(--dark);
+        }
+        
+        .video-box {
+            position: relative;
+            border-radius: var(--border-radius);
+            overflow: hidden;
+        }
+        
+        .video-label {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        
+        video {
+            width: 100%;
+            height: 300px;
+            background: black;
+            display: block;
+        }
+        
+        .control-panel {
+            padding: 20px;
+            border-top: 1px solid #eee;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: var(--border-radius);
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: var(--border-radius);
+            background: #e9ecef;
+            text-align: center;
+            font-weight: 500;
+        }
+        
+        @media (max-width: 768px) {
+            .video-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Secure Video Conference</h1>
+        </header>
+        
+        <div class="video-container">
+            <div class="video-box">
+                <div class="video-label">Your Camera</div>
+                <video id="localVideo" autoplay muted playsinline></video>
+            </div>
+            <div class="video-box">
+                <div class="video-label">Remote Participant</div>
+                <video id="remoteVideo" autoplay playsinline></video>
+            </div>
+        </div>
+        
+        <div class="control-panel">
+            <div class="form-group">
+                <label for="nameInput">Your Display Name</label>
+                <input id="nameInput" placeholder="Enter your name">
+            </div>
+            
+            <div class="form-group">
+                <label for="serverInput">Server Address</label>
+                <input id="serverInput" placeholder="Server IP" value="127.0.0.1">
+            </div>
+            
+            <div class="button-group">
+                <button class="btn-primary" onclick="connect()">Connect to Server</button>
+            </div>
+            
+            <div class="form-group" style="margin-top: 25px;">
+                <label for="targetInput">Call Participant</label>
+                <input id="targetInput" placeholder="Enter recipient's name">
+            </div>
+            
+            <div class="button-group">
+                <button class="btn-primary" onclick="startCall()">Start Call</button>
+                <button class="btn-danger" onclick="endCall()">End Call</button>
+            </div>
+            
+            <div class="status" id="connectionStatus">
+                Not connected
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const statusDisplay = document.getElementById('connectionStatus');
+        
+        // WebSocket event handlers
+        socket.on('video_frame', (data) => {
+            remoteVideo.src = `data:image/jpeg;base64,${data.frame}`;
+        });
+        
+        socket.on('connect', () => {
+            updateStatus('Connected to signaling server', 'success');
+        });
+        
+        socket.on('disconnect', () => {
+            updateStatus('Disconnected from server', 'error');
+        });
+        
+        // Connection management
+        function connect() {
+            const name = document.getElementById('nameInput').value.trim();
+            const serverIp = document.getElementById('serverInput').value.trim();
+            
+            if (!name || !serverIp) {
+                updateStatus('Please enter both name and server IP', 'error');
+                return;
+            }
+            
+            updateStatus('Connecting...', 'warning');
+            
+            fetch('/connect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name: name,
+                    server_ip: serverIp
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    updateStatus(`Error: ${data.error}`, 'error');
+                } else {
+                    updateStatus('Successfully connected!', 'success');
+                    setupLocalStream();
+                }
+            })
+            .catch(err => {
+                updateStatus(`Connection failed: ${err}`, 'error');
+            });
+        }
+        
+        function startCall() {
+            const target = document.getElementById('targetInput').value.trim();
+            if (!target) {
+                updateStatus('Please enter a recipient name', 'error');
+                return;
+            }
+            
+            updateStatus(`Calling ${target}...`, 'warning');
+            
+            fetch('/call', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    target: target
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    updateStatus(`Call failed: ${data.error}`, 'error');
+                } else {
+                    updateStatus(`Call connected with ${target}`, 'success');
+                }
+            });
+        }
+        
+        function endCall() {
+            updateStatus('Ending call...', 'warning');
+            fetch('/end_call', { method: 'POST' })
+                .then(() => updateStatus('Call ended', 'info'));
+        }
+        
+        // Helper functions
+        function updateStatus(message, type) {
+            statusDisplay.textContent = message;
+            statusDisplay.style.color = 
+                type === 'success' ? 'green' :
+                type === 'error' ? 'red' :
+                type === 'warning' ? 'orange' : 'black';
+        }
+        
+        async function setupLocalStream() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: true 
+                });
+                localVideo.srcObject = stream;
+            } catch (err) {
+                updateStatus(`Camera error: ${err.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>
