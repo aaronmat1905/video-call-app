@@ -45,6 +45,26 @@ def connect():
     try:
         control = ControlProtocol()
         client_state['control_conn'] = control.connect(client_state['server_ip'])
+        client_state['control_conn'].register(client_state['name'])
+
+        # Start listening for incoming signals
+        def handle_signal(signal, payload):
+            print(f"📩 Received: {signal} | {payload}")
+
+            if signal == "CALL":
+                print(f"📞 Incoming call from {payload}")
+                client_state['target_user'] = payload
+                client_state['active_call'] = True
+                client_state['control_conn'].send_signal("ANSWER", payload)
+
+            elif signal == "ANSWER":
+                print(f"✅ {payload} accepted the call!")
+
+            elif signal == "END":
+                print("🔚 Call ended.")
+                client_state['active_call'] = False
+
+        client_state['control_conn'].listen_for_signals(handle_signal)
 
         # Start media receivers
         client_state['video_channel'].start_receiver(process_video_frame)
@@ -69,6 +89,7 @@ def call():
 def end_call():
     if client_state['control_conn']:
         client_state['control_conn'].send_signal('END', client_state['name'])
+        
         client_state['active_call'] = False
     return jsonify({'status': 'call_ended'})
 

@@ -38,14 +38,52 @@ def control_server():
     except Exception as e:
         print(f"[Control Server] Error: {e}")
 
+# Add global registry
+connected_clients = {}  # name → conn
+
 def handle_control(conn, addr):
     try:
         data = conn.recv(1024).decode()
+        print(f"[Control] From {addr}: {data}")
+
         if data.startswith("CALL|"):
-            print(f"📞 Call request received: {data}")
-            # Implement call routing logic
+            caller = get_name_from_conn(conn)
+            target = data.split('|')[1]
+
+            print(f"📞 {caller} wants to call {target}")
+
+            if target in connected_clients:
+                target_conn = connected_clients[target]
+                target_conn.send(f"CALL|{caller}".encode())
+                print(f"📤 Forwarded CALL to {target}")
+            else:
+                conn.send(f"ERROR|User {target} not found".encode())
+
+        elif data.startswith("REGISTER|"):
+            name = data.split('|')[1]
+            connected_clients[name] = conn
+            print(f"✅ Registered client: {name}")
+
+        elif data.startswith("ANSWER|"):
+            target = data.split('|')[1]
+            if target in connected_clients:
+                connected_clients[target].send(f"ANSWER|{get_name_from_conn(conn)}".encode())
+
+        elif data.startswith("END|"):
+            target = data.split('|')[1]
+            if target in connected_clients:
+                connected_clients[target].send(f"END|{get_name_from_conn(conn)}".encode())
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
     finally:
         conn.close()
+
+def get_name_from_conn(conn):
+    for name, c in connected_clients.items():
+        if c == conn:
+            return name
+    return "Unknown"
 
 # Video Channel (UDP 6000)
 def video_server():
