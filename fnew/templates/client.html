@@ -10,6 +10,8 @@
             --primary: #4361ee;
             --secondary: #3f37c9;
             --danger: #f72585;
+            --success: #2ecc71;
+            --warning: #f39c12;
             --light: #f8f9fa;
             --dark: #212529;
             --border-radius: 8px;
@@ -37,6 +39,28 @@
             color: white;
             padding: 20px;
             text-align: center;
+            position: relative;
+        }
+        
+        .connection-badge {
+            position: absolute;
+            right: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .connection-badge.online {
+            background: var(--success);
+            color: white;
+        }
+
+        .connection-badge.offline {
+            background: var(--danger);
+            color: white;
         }
         
         h1 {
@@ -56,6 +80,7 @@
             position: relative;
             border-radius: var(--border-radius);
             overflow: hidden;
+            background: #000;
         }
         
         .video-label {
@@ -118,7 +143,13 @@
             transition: all 0.2s;
         }
         
-        button:hover {
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        
+        button:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
@@ -132,6 +163,11 @@
             background: var(--danger);
             color: white;
         }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
         
         .status {
             margin-top: 20px;
@@ -141,11 +177,94 @@
             text-align: center;
             font-weight: 500;
         }
+
+        .status.error {
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        .status.success {
+            background: #dcfce7;
+            color: var(--success);
+        }
+
+        .status.warning {
+            background: #fef3c7;
+            color: var(--warning);
+        }
+        
+        .call-notification {
+            display: none;
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .call-notification.show {
+            display: block;
+        }
+
+        .call-notification h3 {
+            margin: 0 0 10px 0;
+            color: var(--primary);
+        }
+
+        .call-notification .button-group {
+            margin-top: 15px;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
         
         @media (max-width: 768px) {
             .video-container {
                 grid-template-columns: 1fr;
             }
+        }
+
+        .media-controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        .media-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .media-btn:hover {
+            background: rgba(0,0,0,0.9);
+        }
+
+        .media-btn.muted {
+            background: var(--danger);
         }
     </style>
 </head>
@@ -153,12 +272,21 @@
     <div class="container">
         <header>
             <h1>Secure Video Conference</h1>
+            <div id="connectionBadge" class="connection-badge offline">Offline</div>
         </header>
         
         <div class="video-container">
             <div class="video-box">
                 <div class="video-label">Your Camera</div>
                 <video id="localVideo" autoplay muted playsinline></video>
+                <div class="media-controls">
+                    <div class="media-btn" id="toggleMic" title="Toggle Microphone">
+                        <i class="fas fa-microphone"></i>
+                    </div>
+                    <div class="media-btn" id="toggleVideo" title="Toggle Video">
+                        <i class="fas fa-video"></i>
+                    </div>
+                </div>
             </div>
             <div class="video-box">
                 <div class="video-label">Remote Participant</div>
@@ -178,7 +306,7 @@
             </div>
             
             <div class="button-group">
-                <button class="btn-primary" onclick="connect()">Connect to Server</button>
+                <button id="connectBtn" class="btn-primary" onclick="connect()">Connect to Server</button>
             </div>
             
             <div class="form-group" style="margin-top: 25px;">
@@ -187,8 +315,8 @@
             </div>
             
             <div class="button-group">
-                <button class="btn-primary" onclick="startCall()">Start Call</button>
-                <button class="btn-danger" onclick="endCall()">End Call</button>
+                <button id="callBtn" class="btn-primary" onclick="startCall()" disabled>Start Call</button>
+                <button id="endCallBtn" class="btn-danger" onclick="endCall()" disabled>End Call</button>
             </div>
             
             <div class="status" id="connectionStatus">
@@ -197,11 +325,31 @@
         </div>
     </div>
 
+    <div id="callNotification" class="call-notification">
+        <h3>Incoming Call</h3>
+        <p>From: <span id="callerName"></span></p>
+        <div class="button-group">
+            <button class="btn-success" onclick="acceptCall()">Accept</button>
+            <button class="btn-danger" onclick="rejectCall()">Reject</button>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+
     <script>
         const socket = io();
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
         const statusDisplay = document.getElementById('connectionStatus');
+        const connectionBadge = document.getElementById('connectionBadge');
+        const callNotification = document.getElementById('callNotification');
+        const callerNameSpan = document.getElementById('callerName');
+        
+        let localStream = null;
+        let isConnected = false;
+        let currentCall = null;
+        let isAudioMuted = false;
+        let isVideoMuted = false;
         
         // WebSocket event handlers
         socket.on('video_frame', (data) => {
@@ -210,10 +358,33 @@
         
         socket.on('connect', () => {
             updateStatus('Connected to signaling server', 'success');
+            connectionBadge.textContent = 'Online';
+            connectionBadge.classList.remove('offline');
+            connectionBadge.classList.add('online');
         });
         
         socket.on('disconnect', () => {
             updateStatus('Disconnected from server', 'error');
+            connectionBadge.textContent = 'Offline';
+            connectionBadge.classList.remove('online');
+            connectionBadge.classList.add('offline');
+            handleDisconnect();
+        });
+
+        socket.on('incoming_call', (data) => {
+            showIncomingCall(data.caller);
+        });
+
+        socket.on('call_accepted', (data) => {
+            handleCallAccepted(data);
+        });
+
+        socket.on('call_rejected', (data) => {
+            handleCallRejected(data);
+        });
+
+        socket.on('call_ended', (data) => {
+            handleCallEnded(data);
         });
         
         // Connection management
@@ -241,66 +412,192 @@
                 if (data.error) {
                     updateStatus(`Error: ${data.error}`, 'error');
                 } else {
+                    isConnected = true;
                     updateStatus('Successfully connected!', 'success');
                     setupLocalStream();
+                    enableCallControls();
                 }
             })
             .catch(err => {
                 updateStatus(`Connection failed: ${err}`, 'error');
             });
         }
-        
+
+        function enableCallControls() {
+            document.getElementById('callBtn').disabled = false;
+            document.getElementById('connectBtn').disabled = true;
+            document.getElementById('nameInput').disabled = true;
+            document.getElementById('serverInput').disabled = true;
+        }
+
+        function disableCallControls() {
+            document.getElementById('callBtn').disabled = true;
+            document.getElementById('endCallBtn').disabled = true;
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('nameInput').disabled = false;
+            document.getElementById('serverInput').disabled = false;
+        }
+
+        // Call management
         function startCall() {
             const target = document.getElementById('targetInput').value.trim();
             if (!target) {
-                updateStatus('Please enter a recipient name', 'error');
+                updateStatus('Please enter recipient\'s name', 'error');
                 return;
             }
-            
-            updateStatus(`Calling ${target}...`, 'warning');
-            
+
             fetch('/call', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    target: target
-                })
+                body: JSON.stringify({ target })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
                     updateStatus(`Call failed: ${data.error}`, 'error');
                 } else {
-                    updateStatus(`Call connected with ${target}`, 'success');
+                    currentCall = { target };
+                    updateStatus('Calling...', 'warning');
+                    document.getElementById('endCallBtn').disabled = false;
+                    document.getElementById('callBtn').disabled = true;
                 }
+            })
+            .catch(err => {
+                updateStatus(`Call failed: ${err}`, 'error');
             });
         }
-        
+
         function endCall() {
-            updateStatus('Ending call...', 'warning');
-            fetch('/end_call', { method: 'POST' })
-                .then(() => updateStatus('Call ended', 'info'));
+            if (!currentCall) return;
+
+            fetch('/end_call', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ target: currentCall.target })
+            })
+            .then(response => response.json())
+            .then(data => {
+                handleCallEnded();
+            })
+            .catch(err => {
+                updateStatus(`Error ending call: ${err}`, 'error');
+            });
         }
-        
-        // Helper functions
-        function updateStatus(message, type) {
-            statusDisplay.textContent = message;
-            statusDisplay.style.color = 
-                type === 'success' ? 'green' :
-                type === 'error' ? 'red' :
-                type === 'warning' ? 'orange' : 'black';
+
+        function showIncomingCall(caller) {
+            callerNameSpan.textContent = caller;
+            callNotification.classList.add('show');
+            // Auto-hide after 30 seconds if no action
+            setTimeout(() => {
+                if (callNotification.classList.contains('show')) {
+                    rejectCall();
+                }
+            }, 30000);
         }
-        
-        async function setupLocalStream() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: true, 
-                    audio: true 
-                });
-                localVideo.srcObject = stream;
-            } catch (err) {
-                updateStatus(`Camera error: ${err.message}`, 'error');
+
+        function acceptCall() {
+            const caller = callerNameSpan.textContent;
+            fetch('/accept_call', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ caller })
+            })
+            .then(response => response.json())
+            .then(data => {
+                callNotification.classList.remove('show');
+                currentCall = { target: caller };
+                updateStatus(`In call with ${caller}`, 'success');
+                document.getElementById('endCallBtn').disabled = false;
+                document.getElementById('callBtn').disabled = true;
+            })
+            .catch(err => {
+                updateStatus(`Error accepting call: ${err}`, 'error');
+            });
+        }
+
+        function rejectCall() {
+            const caller = callerNameSpan.textContent;
+            fetch('/reject_call', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ caller })
+            })
+            .then(() => {
+                callNotification.classList.remove('show');
+            })
+            .catch(err => {
+                updateStatus(`Error rejecting call: ${err}`, 'error');
+            });
+        }
+
+        function handleCallAccepted(data) {
+            updateStatus(`Call connected with ${currentCall.target}`, 'success');
+        }
+
+        function handleCallRejected(data) {
+            updateStatus(`Call rejected by ${currentCall.target}`, 'error');
+            currentCall = null;
+            document.getElementById('endCallBtn').disabled = true;
+            document.getElementById('callBtn').disabled = false;
+        }
+
+        function handleCallEnded(data) {
+            updateStatus('Call ended', 'warning');
+            currentCall = null;
+            document.getElementById('endCallBtn').disabled = true;
+            document.getElementById('callBtn').disabled = false;
+            remoteVideo.srcObject = null;
+        }
+
+        function handleDisconnect() {
+            isConnected = false;
+            currentCall = null;
+            disableCallControls();
+            if (callNotification.classList.contains('show')) {
+                callNotification.classList.remove('show');
             }
+        }
+
+        // Media controls
+        function setupLocalStream() {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(stream => {
+                    localStream = stream;
+                    localVideo.srcObject = stream;
+                })
+                .catch(err => {
+                    updateStatus(`Camera access error: ${err}`, 'error');
+                });
+        }
+
+        document.getElementById('toggleMic').addEventListener('click', function() {
+            if (localStream) {
+                isAudioMuted = !isAudioMuted;
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = !isAudioMuted;
+                });
+                this.classList.toggle('muted');
+                this.querySelector('i').classList.toggle('fa-microphone');
+                this.querySelector('i').classList.toggle('fa-microphone-slash');
+            }
+        });
+
+        document.getElementById('toggleVideo').addEventListener('click', function() {
+            if (localStream) {
+                isVideoMuted = !isVideoMuted;
+                localStream.getVideoTracks().forEach(track => {
+                    track.enabled = !isVideoMuted;
+                });
+                this.classList.toggle('muted');
+                this.querySelector('i').classList.toggle('fa-video');
+                this.querySelector('i').classList.toggle('fa-video-slash');
+            }
+        });
+
+        function updateStatus(message, type = '') {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + type;
         }
     </script>
 </body>

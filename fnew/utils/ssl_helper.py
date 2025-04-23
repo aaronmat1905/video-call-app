@@ -1,47 +1,38 @@
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import hashes
-import datetime
+from OpenSSL import crypto
+import os
 
 def generate_self_signed_cert():
+    """Generate a self-signed certificate and private key"""
+    
     # Generate key
-    key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
+    key = crypto.PKey()
+    key.generate_key(crypto.TYPE_RSA, 2048)
     
-    # Generate cert
-    subject = issuer = x509.Name([
-        x509.NameAttribute(x509.NameOID.COMMON_NAME, u"localhost")
-    ])
+    # Generate certificate
+    cert = crypto.X509()
+    cert.get_subject().C = "US"
+    cert.get_subject().ST = "State"
+    cert.get_subject().L = "City"
+    cert.get_subject().O = "Organization"
+    cert.get_subject().OU = "Organizational Unit"
+    cert.get_subject().CN = "localhost"
     
-    cert = x509.CertificateBuilder().subject_name(
-        subject
-    ).issuer_name(
-        issuer
-    ).public_key(
-        key.public_key()
-    ).serial_number(
-        x509.random_serial_number()
-    ).not_valid_before(
-        datetime.datetime.utcnow()
-    ).not_valid_after(
-        datetime.datetime.utcnow() + datetime.timedelta(days=365)
-    ).add_extension(
-        x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
-        critical=False,
-    ).sign(key, hashes.SHA256(), default_backend())
+    # Set certificate properties
+    cert.set_serial_number(1000)
+    cert.gmtime_adj_notBefore(0)
+    cert.gmtime_adj_notAfter(365*24*60*60)  # Valid for one year
+    cert.set_issuer(cert.get_subject())
+    cert.set_pubkey(key)
     
-    # Write files
-    with open("key.pem", "wb") as f:
-        f.write(key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption()
-        ))
+    # Sign certificate
+    cert.sign(key, 'sha256')
     
+    # Write certificate and private key to files
     with open("cert.pem", "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
+        f.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert))
+    
+    with open("key.pem", "wb") as f:
+        f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
+
+if __name__ == "__main__":
+    generate_self_signed_cert()

@@ -2,16 +2,18 @@
 
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
-from video_channel import VideoChannel
-from audio_channel import AudioChannel
-from control_protocol import ControlProtocol
-from utils.ssl_helper import generate_self_signed_cert
 
-import threading
-import webbrowser
+import socket
 import os
+import ssl
+import threading
 import cv2
+import numpy as np
 import base64
+import pyaudio
+import wave
+import time
+from utils.ssl_helper import generate_self_signed_cert
 
 # 🔐 Generate certs if missing
 if not (os.path.exists('cert.pem') and os.path.exists('key.pem')):
@@ -25,12 +27,165 @@ socketio = SocketIO(app, cors_allowed_origins='*')
 client_state = {
     'name': '',
     'server_ip': '127.0.0.1',
-    'target_user': '',
-    'control_conn': None,
-    'video_channel': VideoChannel(port=6002),
-    'audio_channel': AudioChannel(port=6003),
-    'active_call': False
+    'control_socket': None,
+    'video_socket': None,
+    'audio_socket': None,
+    'current_call': None,
+    'stream': None,
+    'audio_stream': None
 }
+
+# Audio settings
+CHUNK = 1024
+FORMAT = pyaudio.paFloat32
+CHANNELS = 1
+RATE = 44100
+
+def create_ssl_context():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations('cert.pem')
+    return context
+
+def connect_control(server_ip):
+    """Establish control connection with SSL"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        secure_sock = create_ssl_context().wrap_socket(sock, server_hostname=server_ip)
+        secure_sock.connect((server_ip, 5000))
+        return secure_sock
+    except Exception as e:
+        print(f"Control connection error: {e}")
+        return None
+
+def handle_control_messages():
+    """Handle incoming control messages"""
+    while True:
+        try:
+            if not client_state['control_socket']:
+                time.sleep(1)
+                continue
+
+            data = client_state['control_socket'].recv(1024).decode()
+            if not data:
+                break
+
+            print(f"📥 Received control message: {data}")
+
+            if data.startswith("INCOMING|"):
+                caller = data.split('|')[1]
+                socketio.emit('incoming_call', {'caller': caller})
+
+            elif data.startswith("ACCEPTED|"):
+                target = data.split('|')[1]
+                client_state['current_call'] = {'target': target, 'status': 'connected'}
+                socketio.emit('call_accepted', {'target': target})
+
+            elif data.startswith("REJECTED|"):
+                target = data.split('|')[1]
+                client_state['current_call'] = None
+                socketio.emit('call_rejected', {'target': target})
+
+            elif data.startswith("END|"):
+                ender = data.split('|')[1]
+                client_state['current_call'] = None
+                socketio.emit('call_ended', {'ender': ender})
+
+            elif data.startswith("ERROR|"):
+                error = data.split('|')[1]
+                socketio.emit('error', {'message': error})
+
+            elif data.startswith("USERS|"):
+                users = data.split('|')[1].split(',')
+                socketio.emit('user_list', {'users': users})
+
+        except Exception as e:
+            print(f"Control message error: {e}")
+            break
+
+    # Connection lost
+    client_state['control_socket'] = None
+    socketio.emit('disconnected')
+
+def setup_video_socket():
+    """Setup UDP socket for video transmission"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('0.0.0.0', 0))  # Let OS choose port
+        return sock
+    except Exception as e:
+        print(f"Video socket error: {e}")
+        return None
+
+def setup_audio_socket():
+    """Setup UDP socket for audio transmission"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('0.0.0.0', 0))  # Let OS choose port
+        return sock
+    except Exception as e:
+        print(f"Audio socket error: {e}")
+        return None
+
+def start_media_stream():
+    """Start capturing and sending media"""
+    if client_state['stream']:
+        return
+
+    try:
+        # Initialize video capture
+        cap = cv2.VideoCapture(0)
+        client_state['stream'] = cap
+
+        # Initialize audio
+        audio = pyaudio.PyAudio()
+        stream = audio.open(format=FORMAT,
+                          channels=CHANNELS,
+                          rate=RATE,
+                          input=True,
+                          frames_per_buffer=CHUNK)
+        client_state['audio_stream'] = stream
+
+        def send_media():
+            while client_state['stream'] and client_state['current_call']:
+                try:
+                    # Send video
+                    ret, frame = cap.read()
+                    if ret:
+                        # Compress frame
+                        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                        data = buffer.tobytes()
+                        if client_state['video_socket']:
+                            client_state['video_socket'].sendto(data, 
+                                (client_state['server_ip'], 6000))
+
+                    # Send audio
+                    audio_data = stream.read(CHUNK, exception_on_overflow=False)
+                    if client_state['audio_socket']:
+                        client_state['audio_socket'].sendto(audio_data,
+                            (client_state['server_ip'], 6001))
+
+                    time.sleep(1/30)  # Limit to ~30fps
+
+                except Exception as e:
+                    print(f"Media streaming error: {e}")
+                    break
+
+        threading.Thread(target=send_media, daemon=True).start()
+
+    except Exception as e:
+        print(f"Media setup error: {e}")
+        stop_media_stream()
+
+def stop_media_stream():
+    """Stop media streaming"""
+    if client_state['stream']:
+        client_state['stream'].release()
+        client_state['stream'] = None
+
+    if client_state['audio_stream']:
+        client_state['audio_stream'].stop_stream()
+        client_state['audio_stream'].close()
+        client_state['audio_stream'] = None
 
 @app.route('/')
 def index():
@@ -39,214 +194,78 @@ def index():
 @app.route('/connect', methods=['POST'])
 def connect():
     data = request.json
+    if not data or 'name' not in data or 'server_ip' not in data:
+        return jsonify({"error": "Name and server IP required"}), 400
+
     client_state['name'] = data['name']
     client_state['server_ip'] = data['server_ip']
-    
-    try:
-        control = ControlProtocol()
-        client_state['control_conn'] = control.connect(client_state['server_ip'])
-        client_state['control_conn'].register(client_state['name'])
 
-        # Start listening for incoming signals
-        def handle_signal(signal, payload):
-            print(f"📩 Received: {signal} | {payload}")
+    # Setup sockets
+    control_socket = connect_control(data['server_ip'])
+    if not control_socket:
+        return jsonify({"error": "Could not connect to server"}), 500
 
-            if signal == "CALL":
-                print(f"📞 Incoming call from {payload}")
-                client_state['target_user'] = payload
-                client_state['active_call'] = True
-                client_state['control_conn'].send_signal("ANSWER", payload)
+    client_state['control_socket'] = control_socket
+    client_state['video_socket'] = setup_video_socket()
+    client_state['audio_socket'] = setup_audio_socket()
 
-            elif signal == "ANSWER":
-                print(f"✅ {payload} accepted the call!")
+    # Register with server
+    control_socket.send(f"REGISTER|{data['name']}".encode())
 
-            elif signal == "END":
-                print("🔚 Call ended.")
-                client_state['active_call'] = False
+    # Start control message handler
+    threading.Thread(target=handle_control_messages, daemon=True).start()
 
-        client_state['control_conn'].listen_for_signals(handle_signal)
-
-        # Start media receivers
-        client_state['video_channel'].start_receiver(process_video_frame)
-        client_state['audio_channel'].start_receiver(process_audio_frame)
-
-        return jsonify({'status': 'connected'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    return jsonify({"status": "connected"})
 
 @app.route('/call', methods=['POST'])
 def call():
-    if not client_state['control_conn']:
-        return jsonify({'error': 'Not connected'}), 400
-    
-    target = request.json['target']
-    client_state['target_user'] = target
-    client_state['control_conn'].send_signal('CALL', target)
-    client_state['active_call'] = True
-    return jsonify({'status': 'calling'})
+    if not client_state['control_socket']:
+        return jsonify({"error": "Not connected to server"}), 400
+
+    data = request.json
+    if not data or 'target' not in data:
+        return jsonify({"error": "Target name required"}), 400
+
+    client_state['control_socket'].send(f"CALL|{data['target']}".encode())
+    client_state['current_call'] = {'target': data['target'], 'status': 'calling'}
+    return jsonify({"status": "calling"})
+
+@app.route('/accept_call', methods=['POST'])
+def accept_call():
+    if not client_state['control_socket']:
+        return jsonify({"error": "Not connected to server"}), 400
+
+    data = request.json
+    if not data or 'caller' not in data:
+        return jsonify({"error": "Caller name required"}), 400
+
+    client_state['control_socket'].send(f"ACCEPT|{data['caller']}".encode())
+    client_state['current_call'] = {'target': data['caller'], 'status': 'connected'}
+    start_media_stream()
+    return jsonify({"status": "accepted"})
+
+@app.route('/reject_call', methods=['POST'])
+def reject_call():
+    if not client_state['control_socket']:
+        return jsonify({"error": "Not connected to server"}), 400
+
+    data = request.json
+    if not data or 'caller' not in data:
+        return jsonify({"error": "Caller name required"}), 400
+
+    client_state['control_socket'].send(f"REJECT|{data['caller']}".encode())
+    return jsonify({"status": "rejected"})
 
 @app.route('/end_call', methods=['POST'])
 def end_call():
-    if client_state['control_conn']:
-        client_state['control_conn'].send_signal('END', client_state['name'])
-        
-        client_state['active_call'] = False
-    return jsonify({'status': 'call_ended'})
+    if not client_state['control_socket'] or not client_state['current_call']:
+        return jsonify({"error": "No active call"}), 400
 
-def process_video_frame(frame):
-    if client_state['active_call']:
-        client_state['video_channel'].send_frame(frame, client_state['server_ip'])
-
-    _, buffer = cv2.imencode('.jpg', frame)
-    frame_base64 = base64.b64encode(buffer).decode('utf-8')
-    socketio.emit('video_frame', {'frame': frame_base64})
-
-def process_audio_frame(frame):
-    if client_state['active_call']:
-        # Placeholder: You can use pyaudio here to play received audio
-        pass
-
-@socketio.on('test')
-def handle_test(data):
-    print(f"🧪 Test message from frontend: {data}")
-    socketio.emit('response', {'message': 'Client backend active'})
+    client_state['control_socket'].send(f"END|{client_state['current_call']['target']}".encode())
+    stop_media_stream()
+    client_state['current_call'] = None
+    return jsonify({"status": "ended"})
 
 if __name__ == '__main__':
-    def launch_browser():
-        import time
-        time.sleep(1)
-        webbrowser.open_new('https://localhost:8080')
-
-    threading.Thread(target=launch_browser).start()
-
-    print("🎬 Client Flask-SocketIO app running...")
+    print("🎬 Starting client...")
     socketio.run(app, host='0.0.0.0', port=8080, ssl_context=('cert.pem', 'key.pem'))
-
-
-# from flask import Flask, render_template, request, jsonify
-# from control_protocol import ControlProtocol
-# from video_channel import VideoChannel
-# from audio_channel import AudioChannel
-# import threading
-# import cv2
-# import numpy as np
-# import base64
-
-# from flask import Flask, render_template, request, jsonify
-# import threading
-# import webbrowser
-# import os
-# import socket
-# from video_channel import VideoChannel
-# from audio_channel import AudioChannel
-# from control_protocol import ControlProtocol
-# from flask_socketio import SocketIO
-
-# socketio = SocketIO(app)
-
-# app = Flask(__name__)
-
-# # Global state
-# client_state = {
-#     'name': '',
-#     'server_ip': '127.0.0.1',
-#     'target_user': '',
-#     'control_conn': None,
-#     'video_channel': VideoChannel(port=6002),  # Explicit port
-#     'audio_channel': AudioChannel(port=6003),
-#     'active_call': False  # Added this flag
-# }
-
-# def run_flask():
-#     app.run(host='0.0.0.0', port=8080, ssl_context=('cert.pem', 'key.pem'), debug=False)
-
-# @app.route('/')
-# def index():
-#     return render_template('client.html')
-
-# @app.route('/connect', methods=['POST'])
-# def connect():
-#     data = request.json
-#     client_state['name'] = data['name']
-#     client_state['server_ip'] = data['server_ip']
-    
-#     try:
-#         # Establish control channel connection
-#         control = ControlProtocol()
-#         client_state['control_conn'] = control.connect(client_state['server_ip'])
-        
-#         # Start media receivers
-#         client_state['video_channel'].start_receiver(process_video_frame)
-#         client_state['audio_channel'].start_receiver(process_audio_frame)
-        
-#         return jsonify({'status': 'connected'})
-#     except Exception as e:
-#         return jsonify({'error': str(e)}), 400
-
-# @app.route('/call', methods=['POST'])
-# def call():
-#     if not client_state['control_conn']:
-#         return jsonify({'error': 'Not connected'}), 400
-    
-#     target = request.json['target']
-#     client_state['control_conn'].send_signal('CALL', target)
-#     client_state['active_call'] = True
-#     return jsonify({'status': 'calling'})
-
-# @app.route('/end_call', methods=['POST'])
-# def end_call():
-#     if client_state['control_conn']:
-#         client_state['control_conn'].send_signal('END', client_state['name'])
-#         client_state['active_call'] = False
-#     return jsonify({'status': 'call_ended'})
-
-# def process_video_frame(frame):
-#     """Send video frames to all connected peers"""
-#     if client_state['active_call']:
-#         # For demo: Send to server (in real app, use peer IP)
-#         client_state['video_channel'].send_frame(frame, client_state['server_ip'])
-    
-#     # Convert frame for web display
-#     _, buffer = cv2.imencode('.jpg', frame)
-#     frame_base64 = base64.b64encode(buffer).decode('utf-8')
-#     socketio.emit('video_frame', {'frame': frame_base64})
-
-# def process_audio_frame(frame):
-#     """Handle incoming audio frames"""
-#     if client_state['active_call']:
-#         # Process audio (play or forward)
-#         pass
-
-# if __name__ == '__main__':
-#     # Start Flask in a separate thread
-#     flask_thread = threading.Thread(target=run_flask)
-#     flask_thread.daemon = True
-#     flask_thread.start()
-
-#     # Auto-launch browser after 1 second
-#     def launch_browser():
-#         import time
-#         time.sleep(1)
-#         webbrowser.open_new('https://localhost:8080')
-    
-#     threading.Thread(target=launch_browser).start()
-
-#     # Start video capture (keep your existing code)
-#     # Replace the video_capture function with this:
-#     def video_capture():
-#         cap = cv2.VideoCapture(0)
-#         try:
-#             while True:
-#                 ret, frame = cap.read()
-#                 if ret and client_state.get('active_call', False):
-#                     # Use send_frame instead of process_frame
-#                     client_state['video_channel'].send_frame(
-#                         frame, 
-#                         client_state['server_ip']
-#                     )
-#                 # Small delay to prevent 100% CPU usage
-#                 cv2.waitKey(1)
-#         finally:
-#             cap.release()
-    
-#     threading.Thread(target=video_capture, daemon=True).start()
