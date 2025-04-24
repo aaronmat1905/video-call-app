@@ -1,38 +1,98 @@
+import socket
 from OpenSSL import crypto
 import os
+from datetime import datetime, timedelta
 
-def generate_self_signed_cert():
-    """Generate a self-signed certificate and private key"""
+def get_local_ip():
+    """Get the local IP address of the machine."""
+    try:
+        # Create a socket to get the local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))  # Connect to Google's DNS
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"  # Fallback to localhost
+
+def generate_self_signed_cert(
+    emailAddress="videochat@example.com",
+    commonName="localhost",
+    countryName="US",
+    localityName="Locality",
+    stateOrProvinceName="State",
+    organizationName="Organization",
+    organizationUnitName="Org Unit",
+    serialNumber=0,
+    validityStartInSeconds=0,
+    validityEndInSeconds=10*365*24*60*60,
+    KEY_FILE="key.pem",
+    CERT_FILE="cert.pem"):
+    """Generate self-signed certificates for SSL."""
     
-    # Generate key
-    key = crypto.PKey()
-    key.generate_key(crypto.TYPE_RSA, 2048)
+    # Get the local IP for SAN
+    local_ip = get_local_ip()
     
-    # Generate certificate
+    # Create key
+    k = crypto.PKey()
+    k.generate_key(crypto.TYPE_RSA, 4096)
+    
+    # Create a self-signed cert
     cert = crypto.X509()
-    cert.get_subject().C = "US"
-    cert.get_subject().ST = "State"
-    cert.get_subject().L = "City"
-    cert.get_subject().O = "Organization"
-    cert.get_subject().OU = "Organizational Unit"
-    cert.get_subject().CN = "localhost"
+    cert.get_subject().C = countryName
+    cert.get_subject().ST = stateOrProvinceName
+    cert.get_subject().L = localityName
+    cert.get_subject().O = organizationName
+    cert.get_subject().OU = organizationUnitName
+    cert.get_subject().CN = commonName
+    cert.get_subject().emailAddress = emailAddress
     
-    # Set certificate properties
-    cert.set_serial_number(1000)
-    cert.gmtime_adj_notBefore(0)
-    cert.gmtime_adj_notAfter(365*24*60*60)  # Valid for one year
+    # Set certificate validity
+    cert.set_serial_number(serialNumber)
+    cert.set_notBefore(datetime.now().strftime("%Y%m%d%H%M%SZ").encode())
+    cert.set_notAfter((datetime.now() + timedelta(days=365)).strftime("%Y%m%d%H%M%SZ").encode())
+    
+    # Set issuer to subject (self-signed)
     cert.set_issuer(cert.get_subject())
-    cert.set_pubkey(key)
+    cert.set_pubkey(k)
     
-    # Sign certificate
-    cert.sign(key, 'sha256')
+    # Add Subject Alternative Names
+    san_list = [
+        b"DNS:localhost",
+        b"DNS:127.0.0.1",
+        f"DNS:{local_ip}".encode(),
+        f"IP:{local_ip}".encode(),
+        b"IP:127.0.0.1"
+    ]
     
-    # Write certificate and private key to files
-    with open("cert.pem", "wb") as f:
-        f.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert))
+    san_extension = crypto.X509Extension(
+        b"subjectAltName",
+        False,
+        b", ".join(san_list)
+    )
     
-    with open("key.pem", "wb") as f:
-        f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
-
-if __name__ == "__main__":
-    generate_self_signed_cert()
+    # Add extensions
+    cert.add_extensions([
+        crypto.X509Extension(b"basicConstraints", True, b"CA:FALSE"),
+        crypto.X509Extension(b"keyUsage", True, b"digitalSignature, keyEncipherment"),
+        crypto.X509Extension(b"extendedKeyUsage", False, b"serverAuth"),
+        san_extension
+    ])
+    
+    # Sign the certificate
+    cert.sign(k, 'sha256')
+    
+    # Create the cert directory if it doesn't exist
+    cert_dir = os.path.dirname(CERT_FILE)
+    if cert_dir:
+        os.makedirs(cert_dir, exist_ok=True)
+    
+    # Save the key and certificate
+    with open(CERT_FILE, "wt") as f:
+        f.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode("utf-8"))
+    
+    with open(KEY_FILE, "wt") as f:
+        f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode("utf-8"))
+        
+    print(f"🔒 Generated SSL certificate for: localhost, 127.0.0.1, {local_ip}")
+    return local_ip

@@ -1,0 +1,1 @@
+2025-04-24 08:31:34,153 - ERROR - Failed to start client: server() got an unexpected keyword argument 'ssl_context'
